@@ -1,10 +1,10 @@
 import type {
-  AuthUser,
   Task,
   TaskComment,
   TaskFilter,
   Team,
   TeamTab,
+  UserProfile,
 } from '../types';
 import FilterTabs from './FilterTabs';
 import HistoryList from './HistoryList';
@@ -27,7 +27,7 @@ function isOverdue(task: Task, now: number): boolean {
 
 interface TeamViewProps {
   team: Team;
-  user: AuthUser;
+  user: UserProfile;
   loading: boolean;
   filter: TaskFilter;
   tab: TeamTab;

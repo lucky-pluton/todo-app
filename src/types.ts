@@ -32,16 +32,11 @@ export interface AppState {
   history: HistoryEntry[];
 }
 
-export interface AuthUser {
+export interface UserProfile {
   sub: string;
   email: string;
   name: string;
   picture: string | null;
-}
-
-export interface AuthInfo {
-  user: AuthUser | null;
-  configured: boolean;
 }
 
 export type TaskFilter = 'all' | 'pending' | 'overdue' | 'completed';

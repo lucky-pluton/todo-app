@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './api';
-import { CheckIcon, LogOutIcon } from './components/icons';
-import LoginScreen from './components/LoginScreen';
+import { CheckIcon } from './components/icons';
 import PersonalView from './components/PersonalView';
 import Sidebar from './components/Sidebar';
 import TeamView from './components/TeamView';
 import type {
   AppState,
-  AuthInfo,
   TaskFilter,
   Team,
   TeamRole,
   TeamSummary,
   TeamTab,
+  UserProfile,
   WorkspaceView,
 } from './types';
 
@@ -23,20 +22,6 @@ const todayLabel = new Intl.DateTimeFormat(undefined, {
   month: 'long',
   day: 'numeric',
 }).format(new Date());
-
-const AUTH_ERROR_MESSAGES: Record<string, string> = {
-  access_denied: 'Google sign-in was cancelled.',
-  state_mismatch: 'Your sign-in session expired. Please try again.',
-  missing_code: 'Google did not return a sign-in code. Please try again.',
-  not_configured: 'Google sign-in is not configured on this server.',
-  oauth_failed: 'Google sign-in failed. Please try again.',
-  profile_failed:
-    'Google did not return a verified email address. Please try another account.',
-};
-
-function sessionExpiredMessage(): string {
-  return 'Your session expired. Please sign in again.';
-}
 
 function teamSummaryFrom(team: Team, role: TeamRole): TeamSummary {
   return {
@@ -52,9 +37,8 @@ function teamSummaryFrom(team: Team, role: TeamRole): TeamSummary {
 }
 
 export default function App() {
-  const [auth, setAuth] = useState<AuthInfo | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authError, setAuthError] = useState<string | null>(null);
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [userLoading, setUserLoading] = useState(true);
   const [state, setState] = useState<AppState>(emptyState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -79,34 +63,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const errorCode = params.get('auth_error');
-    if (errorCode) {
-      setAuthError(AUTH_ERROR_MESSAGES[errorCode] ?? 'Sign-in failed. Please try again.');
-      window.history.replaceState(
-        {},
-        '',
-        `${window.location.pathname}${window.location.hash}`,
-      );
-    }
-
     let cancelled = false;
 
     void (async () => {
       try {
-        const info = await api.getAuth();
-        if (!cancelled) setAuth(info);
+        const info = await api.getMe();
+        if (!cancelled) setUser(info.user);
       } catch (loadError) {
         if (!cancelled) {
-          setAuth({ user: null, configured: false });
-          setAuthError(
+          setError(
             loadError instanceof Error
               ? loadError.message
-              : 'Could not check your sign-in status.',
+              : 'Could not load your local profile.',
           );
         }
       } finally {
-        if (!cancelled) setAuthLoading(false);
+        if (!cancelled) setUserLoading(false);
       }
     })();
 
@@ -115,35 +87,11 @@ export default function App() {
     };
   }, []);
 
-  const handleSessionExpired = useCallback(() => {
-    queue.current = Promise.resolve();
-    teamQueue.current = Promise.resolve();
-    teamRequest.current += 1;
-    setAuth((current) => (current ? { ...current, user: null } : current));
-    setAuthError(sessionExpiredMessage());
-    setState(emptyState);
-    setTeams([]);
-    setTeam(null);
-    setView({ kind: 'personal' });
-    setError(null);
-    setLoading(false);
-    setTeamsLoading(false);
-    setTeamLoading(false);
+  const handleActionError = useCallback((actionError: unknown) => {
+    setError(
+      actionError instanceof Error ? actionError.message : 'Something went wrong.',
+    );
   }, []);
-
-  const handleActionError = useCallback(
-    (actionError: unknown) => {
-      if (actionError instanceof api.ApiError && actionError.status === 401) {
-        handleSessionExpired();
-        return;
-      }
-
-      setError(
-        actionError instanceof Error ? actionError.message : 'Something went wrong.',
-      );
-    },
-    [handleSessionExpired],
-  );
 
   const updateTeamSummary = useCallback((next: Team) => {
     setTeams((current) =>
@@ -193,12 +141,10 @@ export default function App() {
     try {
       const response = await api.getTeams();
       setTeams(response.teams);
-    } catch (refreshError) {
-      if (refreshError instanceof api.ApiError && refreshError.status === 401) {
-        handleSessionExpired();
-      }
+    } catch {
+      // Quiet refresh: errors surface through the main actions instead.
     }
-  }, [handleSessionExpired]);
+  }, []);
 
   const loadTeam = useCallback(
     async (id: string) => {
@@ -234,16 +180,16 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (auth?.user) {
+    if (user) {
       void loadState();
       void loadTeams();
     }
-  }, [auth?.user, loadState, loadTeams]);
+  }, [user, loadState, loadTeams]);
 
-  // Keep the sidebar team list fresh so newly invited teams appear even when
-  // the user was already signed in before the invite was sent.
+  // Keep the sidebar team list fresh so newly invited teams appear without a
+  // full page reload.
   useEffect(() => {
-    if (!auth?.user) return;
+    if (!user) return;
 
     const refresh = () => {
       if (document.hidden) return;
@@ -259,7 +205,7 @@ export default function App() {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [auth?.user, refreshTeams]);
+  }, [user, refreshTeams]);
 
   useEffect(() => {
     if (view.kind !== 'team') return;
@@ -275,11 +221,6 @@ export default function App() {
           updateTeamSummary(next);
         })
         .catch((refreshError: unknown) => {
-          if (refreshError instanceof api.ApiError && refreshError.status === 401) {
-            handleSessionExpired();
-            return;
-          }
-
           if (
             refreshError instanceof api.ApiError &&
             (refreshError.status === 403 || refreshError.status === 404)
@@ -305,7 +246,7 @@ export default function App() {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [view, updateTeamSummary, handleSessionExpired]);
+  }, [view, updateTeamSummary]);
 
   const runAction = useCallback(
     (action: () => Promise<AppState>): Promise<boolean> => {
@@ -450,9 +391,9 @@ export default function App() {
 
   const handleRemoveMember = useCallback(
     async (email: string) => {
-      if (!team || !auth?.user) return false;
+      if (!team || !user) return false;
 
-      const self = email.toLowerCase() === auth.user.email.toLowerCase();
+      const self = email.toLowerCase() === user.email.toLowerCase();
       const message = self
         ? `Leave "${team.name}"? You will lose access to its shared tasks.`
         : `Remove ${email} from "${team.name}"?`;
@@ -475,7 +416,7 @@ export default function App() {
         return false;
       }
     },
-    [team, auth, runTeamAction, handleActionError],
+    [team, user, runTeamAction, handleActionError],
   );
 
   const handleDeleteTeam = useCallback(() => {
@@ -552,42 +493,24 @@ export default function App() {
     }
   }, [view, loadState, loadTeams, loadTeam]);
 
-  const handleLogout = useCallback(async () => {
-    try {
-      await api.logout();
-    } catch {
-      // Clear the local session even if the network request failed.
-    }
-
-    queue.current = Promise.resolve();
-    teamQueue.current = Promise.resolve();
-    teamRequest.current += 1;
-    setAuth((current) => (current ? { ...current, user: null } : current));
-    setAuthError(null);
-    setState(emptyState);
-    setTeams([]);
-    setTeam(null);
-    setView({ kind: 'personal' });
-    setTeamTab('tasks');
-    setTeamFilter('all');
-    setError(null);
-    setFilter('all');
-    setLoading(false);
-    setTeamsLoading(false);
-    setTeamLoading(false);
-  }, []);
-
-  if (authLoading || !auth) {
+  if (userLoading) {
     return (
-      <main className="auth-page" aria-busy="true">
-        <span className="auth-spinner" aria-hidden="true" />
-        <p>Checking your sign-in…</p>
+      <main className="startup-page" aria-busy="true">
+        <span className="startup-spinner" aria-hidden="true" />
+        <p>Loading your workspace…</p>
       </main>
     );
   }
 
-  if (!auth.user) {
-    return <LoginScreen configured={auth.configured} error={authError} />;
+  if (!user) {
+    return (
+      <main className="startup-page" role="alert">
+        <p>{error ?? 'Could not load your local profile.'}</p>
+        <button type="button" onClick={() => window.location.reload()}>
+          Reload
+        </button>
+      </main>
+    );
   }
 
   return (
@@ -606,30 +529,21 @@ export default function App() {
         <div className="header-right">
           <span className="today-badge">{todayLabel}</span>
           <div className="account">
-            {auth.user.picture ? (
+            {user.picture ? (
               <img
                 className="avatar"
-                src={auth.user.picture}
+                src={user.picture}
                 alt=""
                 referrerPolicy="no-referrer"
               />
             ) : (
               <span className="avatar avatar-fallback" aria-hidden="true">
-                {auth.user.name.charAt(0).toUpperCase()}
+                {user.name.charAt(0).toUpperCase()}
               </span>
             )}
-            <span className="account-name" title={auth.user.email}>
-              {auth.user.name}
+            <span className="account-name" title={user.email}>
+              {user.name}
             </span>
-            <button
-              type="button"
-              className="signout-btn"
-              title={`Sign out ${auth.user.email}`}
-              aria-label="Sign out"
-              onClick={() => void handleLogout()}
-            >
-              <LogOutIcon />
-            </button>
           </div>
         </div>
       </header>
@@ -677,7 +591,7 @@ export default function App() {
           ) : team ? (
             <TeamView
               team={team}
-              user={auth.user}
+              user={user}
               loading={teamLoading}
               filter={teamFilter}
               tab={teamTab}
@@ -712,7 +626,7 @@ export default function App() {
       </div>
 
       <p className="storage-note">
-        Personal tasks are private to your Google account. Team tasks are shared with
+        Personal tasks are private to your local profile. Team tasks are shared with
         everyone in that team.
       </p>
     </main>

@@ -1,4 +1,4 @@
-import type { AppState, AuthInfo, Team, TeamsResponse } from './types';
+import type { AppState, Team, TeamsResponse, UserProfile } from './types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -41,12 +41,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function getAuth(): Promise<AuthInfo> {
-  return request('/api/auth/me');
-}
-
-export function logout(): Promise<{ ok: boolean }> {
-  return request('/api/auth/logout', { method: 'POST' });
+export function getMe(): Promise<{ user: UserProfile }> {
+  return request('/api/me');
 }
 
 export function getState(): Promise<AppState> {

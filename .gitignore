@@ -1,53 +1,31 @@
 # Dependencies
 node_modules/
-.pnp
-.pnp.js
 
-# Production & Build outputs
+# Build output
 dist/
-dist-ssr/
-build/
-*.local
+*.tsbuildinfo
 
-# Environment variables & secrets
+# Local environment files (keep the example)
 .env
-.env.local
-.env.*.local
 .env.*
 !.env.example
-*.pem
 
-# Local database and session data
+# Local data — never commit personal tasks, teams, or secrets
 data/
-*.session-secret
 
-# Logs
-logs/
+# Logs and diagnostics
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
 
-# Caches and temporary files
-.eslintcache
-.stylelintcache
-*.tsbuildinfo
-.vite/
+# Test and coverage output
+coverage/
 
-# Operating System files
+# Editor and OS files
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# IDE & Editor files
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-.vscode/*
-!.vscode/extensions.json
-!.vscode/settings.json

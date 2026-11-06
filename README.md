@@ -2,12 +2,15 @@
 
 # 📋 My Tasks
 
-### Collaborative, Multi-User Task & Workspace Management Platform
+### Collaborative task management with private lists and shared team boards
 
-A modern, full-stack task management application featuring Google OAuth authentication, isolated personal workspaces, real-time shared team boards, interactive progress tracking, and robust file-based persistence.
+A full-stack task manager built with React, TypeScript, and Express. It pairs a
+private personal to-do list with shared team workspaces, deadlines, progress
+updates, and a complete completion history — all persisted to plain JSON files
+on the server.
 
 [![React](https://img.shields.io/badge/React-19-61dafb?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.x-3178c6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-8.x-646cff?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?style=for-the-badge&logo=express&logoColor=white)](https://expressjs.com/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -16,57 +19,68 @@ A modern, full-stack task management application featuring Google OAuth authenti
 
 ---
 
+> [!IMPORTANT]
+> **Local mode — no sign-in.** Sign-in has been intentionally removed for now.
+> The app runs as a single local profile and is fully usable offline. A new
+> account system will replace this mode in a later change.
+
+---
+
 ## 📑 Table of Contents
 
 - [Overview](#-overview)
 - [Key Features](#-key-features)
 - [Tech Stack](#-tech-stack)
-- [System Architecture](#-system-architecture)
+- [How It Works](#-how-it-works)
 - [Project Structure](#-project-structure)
 - [Getting Started](#-getting-started)
-  - [1. Prerequisites](#1-prerequisites)
-  - [2. Google OAuth Configuration](#2-google-oauth-configuration)
-  - [3. Environment Setup](#3-environment-setup)
-  - [4. Installation & Local Development](#4-installation--local-development)
-- [Application Usage](#-application-usage)
-  - [Personal Workspace](#personal-workspace)
-  - [Team Workspaces & Collaboration](#team-workspaces--collaboration)
-  - [Task Lifecycle & Progress Updates](#task-lifecycle--progress-updates)
-- [Data Storage & Persistence](#-data-storage--persistence)
+- [Using the App](#-using-the-app)
+- [Data Storage](#-data-storage)
 - [REST API Reference](#-rest-api-reference)
 - [Available Scripts](#-available-scripts)
-- [Production Deployment](#-production-deployment)
+- [Building for Production](#-building-for-production)
 
 ---
 
 ## 🌟 Overview
 
-**My Tasks** bridges the gap between private to-do lists and team collaboration boards. Users authenticate securely via their Google accounts, immediately accessing an isolated personal workspace. From there, users can create teams, invite colleagues via Google email, delegate tasks with clear deadlines, and post incremental progress updates with visual sliders.
+**My Tasks** keeps personal planning and team collaboration in one place:
 
-All application state is persisted with atomic file operations on the backend, removing the overhead of complex external database installations while ensuring zero data corruption across restarts.
+- A **personal workspace** for private tasks, deadlines, progress, and history.
+- **Team workspaces** where members share tasks, assign work, and post updates.
+- **Live refresh** so open team boards pick up changes without a reload.
+- **File-based persistence** with atomic writes, so data survives restarts.
+
+The current build runs without authentication, using one local profile. Personal
+tasks are stored for that profile, and teams are stored separately so they can
+be shared again once accounts are added.
 
 ---
 
 ## ✨ Key Features
 
-### 🔐 Secure Authentication & Personal Privacy
-- **Google OAuth 2.0 Integration**: Single sign-on with verified Google accounts; no separate passwords required.
-- **Signed Session Cookies**: Tamper-proof, `HttpOnly` signed session management.
-- **Isolated Personal Space**: Personal tasks and history are strictly private to each Google account.
+### 📝 Personal Workspace
+- Private task list with optional date and time deadlines.
+- Dynamic deadline states: upcoming, due today, and overdue.
+- Progress slider (0–100%) with optional notes on every update.
+- Filters for **All**, **Pending**, **Overdue**, and **Completed**.
+- Completed tasks move into a full history with completion timestamps and all
+  logged updates.
 
-### 👥 Team Collaboration Workspaces
-- **Team Creation & Email Invitations**: Create teams and invite members directly by their Google email address.
-- **Instant Workspace Sync**: Invited users see their team workspaces automatically upon sign-in.
-- **Task Delegation & Assignment**: Assign tasks to specific team members with full visibility.
-- **Role-Based Permissions**: Team owners manage team settings and membership; members collaborate on tasks and updates.
-- **Live Background Refresh**: Automatically synchronizes team tasks every 20 seconds and whenever the browser tab regains focus.
+### 👥 Team Collaboration
+- Create teams and invite members by email address.
+- Assign shared tasks to specific team members.
+- Role-based permissions: owners manage membership and team settings, while
+  members collaborate on tasks and updates.
+- Every shared task and update shows its author and assignee.
+- Team boards and the sidebar refresh every 20 seconds and when the tab regains
+  focus.
 
-### 🎯 Task Lifecycle & Fine-Grained Progress Tracking
-- **Smart Deadlines**: Add tasks with optional date and time deadlines.
-- **Status Indicators**: Dynamic highlighting for upcoming, due-today, and overdue deadlines.
-- **Interactive Progress Slider (0–100%)**: Log progress snapshots with accompanying status notes.
-- **Comprehensive History & Audit Log**: Completed tasks capture creation time, completion time, final progress, and a chronological history of all updates.
-- **Multi-State Filtering**: Quick filter views for **All**, **Pending** (active & on-time), **Overdue**, and **Completed**.
+### 🛡 Reliable Storage
+- Plain JSON files in `data/` — no database server required.
+- Atomic writes via temporary files and `fs.rename`.
+- Corrupt files are backed up instead of discarded.
+- Personal and team data are stored separately.
 
 ---
 
@@ -74,36 +88,32 @@ All application state is persisted with atomic file operations on the backend, r
 
 | Layer | Technologies |
 | :--- | :--- |
-| **Frontend** | React 19, TypeScript, Modern CSS (CSS Variables, Flexbox/Grid), Vite |
-| **Backend** | Express 4, Node.js (v20+), `tsx` (TypeScript runtime) |
-| **Authentication** | Google OAuth 2.0 (Authorization Code Flow), Cryptographic HMAC Signatures |
-| **Storage Engine** | Local File System (JSON) with Atomic Write Guarantees |
-| **Dev Tooling** | Concurrently, Vite Dev Server with API Proxying |
+| **Frontend** | React 19, TypeScript, Vite 8, modern CSS |
+| **Backend** | Express 4, Node.js 20+, `tsx` |
+| **Storage** | Local JSON files with atomic writes |
+| **Tooling** | Concurrently, TypeScript project references |
 
 ---
 
-## 🏗 System Architecture
+## 🏗 How It Works
 
 ```mermaid
 flowchart TD
-    Client["React 19 Frontend\n(Vite Dev :5173 / Production)"]
-    API["Express API Server\n(:3001)"]
-    GoogleAuth["Google OAuth 2.0\n(Accounts & Profiles)"]
-    Storage["Atomic JSON Storage\n(/data)"]
+    Client["React Frontend\n(Vite dev :5173)"]
+    API["Express API\n(:3001)"]
+    Storage["JSON Storage\n(data/)"]
 
-    Client -- "1. OAuth Login" --> GoogleAuth
-    GoogleAuth -- "2. Auth Code" --> API
-    API -- "3. Verify & Issue Signed Session Cookie" --> Client
-
-    Client -- "REST API Calls (Cookies)" --> API
-    API -- "Atomic File Reads / Writes" --> Storage
+    Client -- "REST API calls (/api)" --> API
+    API -- "Atomic reads / writes" --> Storage
 
     subgraph Data Store
-        Storage --> UsersData["data/users/<account-hash>.json\n(Personal Tasks & History)"]
-        Storage --> TeamsData["data/teams/<team-id>.json\n(Shared Tasks, Members & History)"]
-        Storage --> SecretsData["data/.session-secret\n(Generated Secret Fallback)"]
+        Storage --> Users["data/users/<hash>.json\n(personal tasks & history)"]
+        Storage --> Teams["data/teams/<team-id>.json\n(shared tasks, members & history)"]
     end
 ```
+
+In development, Vite proxies `/api` requests to the Express server. In
+production, Express serves both the built frontend and the API.
 
 ---
 
@@ -111,203 +121,174 @@ flowchart TD
 
 ```text
 todo-app/
-├── data/                      # File-based database (git-ignored)
-│   ├── teams/                 # Team JSON files (<team-id>.json)
-│   ├── users/                 # User personal files (<hash>.json)
-│   └── .session-secret        # Auto-generated session secret (if not set in env)
+├── data/                       # File-based storage (git-ignored)
+│   ├── users/                  # Personal task files (<hash>.json)
+│   └── teams/                  # Team files (<team-id>.json)
 ├── server/
-│   └── index.ts               # Express server, OAuth, session logic, and API endpoints
+│   └── index.ts                # Express API, storage, and validation
 ├── src/
-│   ├── components/            # React UI components
-│   │   ├── FilterTabs.tsx     # Filter selector (All / Pending / Overdue / Completed)
-│   │   ├── HistoryItem.tsx    # Completed task card & update log viewer
-│   │   ├── HistoryList.tsx    # List container for completed tasks
-│   │   ├── icons.tsx          # SVG icon collection
-│   │   ├── LoginScreen.tsx    # Authentication landing page
-│   │   ├── MembersPanel.tsx   # Team member management & invitations
-│   │   ├── PersonalView.tsx   # Personal task list & history view
-│   │   ├── Sidebar.tsx        # Navigation sidebar (Personal vs Teams)
-│   │   ├── TaskForm.tsx       # Personal task input form
-│   │   ├── TaskItem.tsx       # Active task item with progress bar & update controls
-│   │   ├── TaskList.tsx       # Active tasks container
-│   │   ├── TeamTaskForm.tsx   # Shared team task creation form
-│   │   └── TeamView.tsx       # Shared team task board & member tabs
-│   ├── api.ts                 # Typed client API wrapper
-│   ├── App.tsx                # Main app layout, state routing & polling
-│   ├── format.ts              # Date, time, and deadline formatting helpers
-│   ├── index.css              # Application styling and theme tokens
-│   ├── main.tsx               # React application entry point
-│   └── types.ts               # Shared TypeScript interfaces
-├── .env.example               # Template environment configuration
-├── .gitignore                 # Standardized Git exclusions
-├── index.html                 # Single page application HTML shell
-├── package.json               # Dependencies and runner scripts
-├── tsconfig.json              # Client TypeScript configuration
-├── tsconfig.server.json       # Server TypeScript configuration
-└── vite.config.ts             # Vite configuration with proxy rules
+│   ├── components/             # React UI components
+│   │   ├── FilterTabs.tsx
+│   │   ├── HistoryItem.tsx
+│   │   ├── HistoryList.tsx
+│   │   ├── MembersPanel.tsx
+│   │   ├── PersonalView.tsx
+│   │   ├── Sidebar.tsx
+│   │   ├── TaskForm.tsx
+│   │   ├── TaskItem.tsx
+│   │   ├── TaskList.tsx
+│   │   ├── TeamTaskForm.tsx
+│   │   ├── TeamView.tsx
+│   │   └── icons.tsx
+│   ├── api.ts                  # Typed client API wrapper
+│   ├── App.tsx                 # App layout, routing, and polling
+│   ├── format.ts               # Date and deadline helpers
+│   ├── index.css               # Theme tokens and styles
+│   ├── main.tsx                # React entry point
+│   └── types.ts                # Shared TypeScript types
+├── .env.example                # Environment template
+├── .gitignore
+├── index.html
+├── package.json
+├── tsconfig.json
+├── tsconfig.server.json
+└── vite.config.ts
 ```
 
 ---
 
 ## 🚀 Getting Started
 
-### 1. Prerequisites
+### Prerequisites
 
-- **Node.js**: `v20.0.0` or higher recommended
-- **npm**: `v9.0.0` or higher
-- A **Google Account** (to configure OAuth credentials)
+- **Node.js** 20 or newer
+- **npm** 9 or newer
 
-### 2. Google OAuth Configuration
-
-To enable Google sign-in:
-
-1. Navigate to the [Google Cloud Console](https://console.cloud.google.com/).
-2. Create a new project (e.g., `My Tasks App`).
-3. Configure the **OAuth consent screen**:
-   - User Type: **External**.
-   - Fill in App Name, Support Email, and Developer Contact Email.
-   - Scopes: Add `openid`, `email`, and `profile`.
-   - Save and proceed. While testing, add your Google email under **Test Users**.
-4. Create Credentials:
-   - Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**.
-   - Application Type: **Web application**.
-   - Name: `My Tasks Web Client`.
-   - **Authorized redirect URIs**:
-     - Development: `http://localhost:5173/api/auth/google/callback`
-     - Production: `https://your-domain.com/api/auth/google/callback`
-5. Note down the **Client ID** and **Client Secret**.
-
-> [!NOTE]
-> In local development with `npm run dev`, Vite runs on port `5173` and proxies `/api` calls to port `3001`. Therefore, the redirect URI points to port `5173`.
-
-### 3. Environment Setup
-
-Copy the sample environment file:
-
-```bash
-cp .env.example .env
-```
-
-Populate `.env` with your Google OAuth credentials:
-
-```ini
-# Google OAuth Credentials
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-your-client-secret
-
-# Optional Configuration
-# APP_URL=http://localhost:5173
-# SESSION_SECRET=generated-32-byte-hex-string
-# PORT=3001
-```
-
-#### Environment Variables Matrix
-
-| Variable | Required | Default | Description |
-| :--- | :---: | :---: | :--- |
-| `GOOGLE_CLIENT_ID` | **Yes** | — | Google Cloud OAuth 2.0 Client ID |
-| `GOOGLE_CLIENT_SECRET` | **Yes** | — | Google Cloud OAuth 2.0 Client Secret |
-| `APP_URL` | Production | Auto-detected | Canonical app URL (e.g. `https://tasks.example.com`) |
-| `SESSION_SECRET` | Production | Auto-generated in `data/` | Secret key used to sign HTTP session cookies |
-| `PORT` | No | `3001` | Port on which the Express server listens |
-| `OAUTH_REDIRECT_URI` | No | Inferred | Manual override for Google OAuth callback URI |
-| `LEGACY_OWNER_EMAIL` | No | — | Email permitted to inherit older single-user `data/tasks.json` |
-
-Generate a production-grade session secret anytime with:
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-### 4. Installation & Local Development
-
-Install project dependencies:
+### 1. Install dependencies
 
 ```bash
 npm install
 ```
 
-Launch both the backend API and frontend dev server concurrently:
+### 2. Configure the local profile
+
+Copy the example environment file:
+
+```bash
+cp .env.example .env
+```
+
+`.env` controls the temporary local profile:
+
+```ini
+LOCAL_USER_SUB=local-user
+LOCAL_USER_EMAIL=local@localhost
+LOCAL_USER_NAME=Local User
+
+# Optional
+# PORT=3001
+```
+
+| Variable | Required | Default | Description |
+| :--- | :---: | :--- | :--- |
+| `LOCAL_USER_SUB` | No | `local-user` | Stable ID for the local profile and its data file |
+| `LOCAL_USER_EMAIL` | No | `local@localhost` | Display email for the local profile |
+| `LOCAL_USER_NAME` | No | `Local User` | Display name for the local profile |
+| `PORT` | No | `3001` | API server port |
+
+To keep existing local tasks, set `LOCAL_USER_SUB` to the ID used previously.
+The migration to the new storage naming is handled automatically the first time
+the server starts.
+
+### 3. Run locally
 
 ```bash
 npm run dev
 ```
 
-- **Frontend**: [http://localhost:5173](http://localhost:5173)
-- **Backend API**: [http://localhost:3001](http://localhost:3001)
+- **App:** [http://localhost:5173](http://localhost:5173)
+- **API:** [http://localhost:3001](http://localhost:3001)
 
-Visit `http://localhost:5173` in your browser and click **Continue with Google** to sign in.
-
----
-
-## 💻 Application Usage
-
-### Personal Workspace
-- Click **My Tasks** in the sidebar to open your private board.
-- Tasks added here are strictly private to your Google account.
-- Type a task description, select an optional deadline date/time, and press Enter or `+`.
-
-### Team Workspaces & Collaboration
-- **Create Teams**: Click **New team** in the sidebar, name your team, and click Create.
-- **Invite Teammates**: Switch to the **Members** tab in the team view and add teammates by their Google email address.
-- **Assign Work**: When creating a shared task, select any team member from the assignee dropdown.
-- **Live Sync**: Teams automatically refresh every 20 seconds, or immediately upon switching browser tabs back to the app.
-
-### Task Lifecycle & Progress Updates
-- **Progress Tracking**: Click **Add update** on any active task. Drag the slider (0–100%) and enter an optional note.
-- **Completion**: Click the checkmark circle. The task completes, updates to 100% progress, and archives into **History**.
-- **History Audit**: Switch to the **Completed** tab to review completed tasks, deadlines, on-time delivery status, and every logged comment with its timestamp.
+Open the app in your browser — no sign-in is required.
 
 ---
 
-## 💾 Data Storage & Persistence
+## 💻 Using the App
 
-The backend utilizes an atomic, file-based persistence mechanism located in the `data/` directory:
+### Personal tasks
+1. Open **My Tasks** in the sidebar.
+2. Type a task and optionally choose a deadline.
+3. Press **Enter** or click **+** to add it.
+4. Use the filter tabs to focus on pending, overdue, or completed work.
 
-- **Per-User Isolation**: User records are stored at `data/users/<hash>.json`, where `<hash>` is the SHA-256 hash of the Google account ID (`sub`), safeguarding privacy.
-- **Shared Team Files**: Teams are saved under `data/teams/<team-id>.json`.
-- **Atomic Writes**: Writes first go to a temporary file (`.tmp`) and are renamed atomically (`fs.rename`), preventing file corruption during power interruptions or process restarts.
-- **Automatic Diagnostics**: If a file ever fails to parse, it is backed up as `<file>.corrupt-<timestamp>` rather than discarded.
+### Progress and history
+- Click **Add update** on a task, drag the progress slider, and add an optional
+  note.
+- Click the checkmark to complete a task. It moves to **Completed** with a
+  timestamp and its full update log.
+
+### Teams
+1. Click **New team**, enter a name, and create it.
+2. Open the **Members** tab and invite people by email.
+3. Add shared tasks and assign them to a teammate.
+4. Team owners can remove members or delete the team; members can leave.
+
+---
+
+## 💾 Data Storage
+
+Everything is stored under `data/` on the server:
+
+- **Personal data:** `data/users/<hash>.json`, where `<hash>` is derived from
+  the profile ID (`sub`). This keeps personal tasks and history separate.
+- **Teams:** `data/teams/<team-id>.json`, including members, tasks, comments,
+  and history.
+- **Atomic writes:** updates are written to a temporary file and renamed into
+  place, avoiding partial writes.
+- **Recovery:** unreadable files are backed up as `<file>.corrupt-<timestamp>`
+  rather than deleted.
+
+`data/` is intentionally excluded from Git so personal content is never
+committed.
 
 ---
 
 ## 🔌 REST API Reference
 
-All task and team endpoints require an active, authenticated session. Unauthenticated requests return `401 Unauthorized`.
+The API runs without authentication in local mode. All endpoints are served
+under `/api`.
 
-### Authentication
+### Profile
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/auth/me` | Fetch current session info and Google configuration status |
-| `GET` | `/api/auth/google` | Initiate Google OAuth 2.0 redirection |
-| `GET` | `/api/auth/google/callback` | OAuth callback handler |
-| `POST` | `/api/auth/logout` | Terminate session and clear cookies |
+| `GET` | `/api/me` | Return the current local profile |
 
 ### Personal Workspace
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/state` | Retrieve active tasks and completed history |
-| `POST` | `/api/tasks` | Create a personal task (`{ text, dueAt }`) |
-| `POST` | `/api/tasks/:id/complete` | Mark personal task as completed |
-| `POST` | `/api/tasks/:id/comments` | Post a progress update (`{ text, progress }`) |
-| `DELETE` | `/api/tasks/:id/comments/:commentId` | Remove a progress update |
-| `DELETE` | `/api/tasks/:id` | Delete an active personal task |
-| `DELETE` | `/api/history` | Clear personal completed task history |
+| `GET` | `/api/state` | Get active tasks and completed history |
+| `POST` | `/api/tasks` | Create a task (`{ text, dueAt }`) |
+| `POST` | `/api/tasks/:id/complete` | Complete a task |
+| `POST` | `/api/tasks/:id/comments` | Add an update (`{ text, progress }`) |
+| `DELETE` | `/api/tasks/:id/comments/:commentId` | Delete an update |
+| `DELETE` | `/api/tasks/:id` | Delete an active task |
+| `DELETE` | `/api/history` | Clear completed history |
 
 ### Teams & Shared Tasks
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/teams` | List teams where current user is a member |
-| `POST` | `/api/teams` | Create a new team (`{ name }`) |
-| `GET` | `/api/teams/:id` | Fetch full team details, members, tasks, and history |
-| `DELETE` | `/api/teams/:id` | Delete a team (*Owner only*) |
-| `POST` | `/api/teams/:id/members` | Invite a teammate (`{ email }`) |
-| `DELETE` | `/api/teams/:id/members/:email` | Remove member or leave team |
-| `POST` | `/api/teams/:id/tasks` | Add shared task (`{ text, dueAt, assigneeEmail }`) |
+| `GET` | `/api/teams` | List teams for the current profile |
+| `POST` | `/api/teams` | Create a team (`{ name }`) |
+| `GET` | `/api/teams/:id` | Get a team with members, tasks, and history |
+| `DELETE` | `/api/teams/:id` | Delete a team (owner only) |
+| `POST` | `/api/teams/:id/members` | Invite a member (`{ email }`) |
+| `DELETE` | `/api/teams/:id/members/:email` | Remove a member or leave |
+| `POST` | `/api/teams/:id/tasks` | Add a shared task (`{ text, dueAt, assigneeEmail }`) |
 | `POST` | `/api/teams/:id/tasks/:taskId/complete` | Complete a shared task |
-| `POST` | `/api/teams/:id/tasks/:taskId/comments` | Post an update to a team task |
-| `DELETE` | `/api/teams/:id/tasks/:taskId/comments/:id` | Remove a team task update |
+| `POST` | `/api/teams/:id/tasks/:taskId/comments` | Add an update to a shared task |
+| `DELETE` | `/api/teams/:id/tasks/:taskId/comments/:id` | Delete a shared task update |
 | `DELETE` | `/api/teams/:id/tasks/:taskId` | Delete a shared task |
-| `DELETE` | `/api/teams/:id/history` | Clear team history (*Owner only*) |
+| `DELETE` | `/api/teams/:id/history` | Clear team history (owner only) |
 
 ---
 
@@ -315,36 +296,35 @@ All task and team endpoints require an active, authenticated session. Unauthenti
 
 | Command | Action |
 | :--- | :--- |
-| `npm run dev` | Runs both backend API and Vite dev server concurrently |
-| `npm run dev:web` | Runs the Vite client development server only |
-| `npm run dev:server` | Runs the Express API server with watch mode (`tsx`) |
-| `npm run build` | Performs TypeScript typechecking and builds client assets into `dist/` |
-| `npm start` | Launches the production Express server serving the API and built assets |
-| `npm run typecheck` | Typechecks both frontend (`tsconfig.json`) and backend (`tsconfig.server.json`) |
-| `npm run preview` | Locally previews the built production Vite client |
+| `npm run dev` | Run the API and Vite dev server together |
+| `npm run dev:web` | Run the Vite client only |
+| `npm run dev:server` | Run the API with watch mode |
+| `npm run build` | Typecheck and build the client into `dist/` |
+| `npm start` | Serve the API and built client from Express |
+| `npm run typecheck` | Typecheck the client and server projects |
+| `npm run preview` | Preview the production Vite build locally |
 
 ---
 
-## 🌐 Production Deployment
+## 🌐 Building for Production
 
-1. **Build the Application**:
+1. Build the app:
+
    ```bash
    npm run build
    ```
-2. **Configure Host Environment Variables**:
-   ```ini
-   NODE_ENV=production
-   PORT=3001
-   APP_URL=https://tasks.yourdomain.com
-   SESSION_SECRET=your-random-32-byte-hex-string
-   GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET=your-client-secret
-   ```
-3. **Start the Production Server**:
+
+2. Start the server:
+
    ```bash
    npm start
    ```
-4. **HTTPS Requirement**:
-   In production (`NODE_ENV=production`), session cookies enforce `Secure: true`. Ensure your app is served over HTTPS via a reverse proxy such as Nginx, Caddy, Cloudflare, or AWS ALB.
-5. **Google Cloud Callback**:
-   Ensure `https://tasks.yourdomain.com/api/auth/google/callback` is listed under **Authorized redirect URIs** in your Google Cloud Console.
+
+3. Set the port if needed:
+
+   ```ini
+   PORT=3001
+   ```
+
+Express serves the built files from `dist/` and exposes the same `/api` routes.
+Because local mode has no credentials or sessions, no extra secrets are required.

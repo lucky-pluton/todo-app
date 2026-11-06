@@ -1,10 +1,4 @@
-import {
-  createHash,
-  createHmac,
-  randomBytes,
-  randomUUID,
-  timingSafeEqual,
-} from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { loadEnvFile } from 'node:process';
@@ -74,15 +68,14 @@ interface Team {
   history: TeamHistoryEntry[];
 }
 
-interface AuthUser {
+interface UserProfile {
   sub: string;
   email: string;
   name: string;
   picture: string | null;
 }
 
-interface AuthenticatedRequest extends Request {
-  authUser?: AuthUser;
+interface AppRequest extends Request {
   userDatabase?: Database;
 }
 
@@ -108,17 +101,14 @@ const maxTeamNameLength = 60;
 const maxTeamMembers = 100;
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() ?? '';
-const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() ?? '';
-const googleConfigured = Boolean(googleClientId && googleClientSecret);
-const configuredAppUrl = (process.env.APP_URL ?? process.env.PUBLIC_URL ?? '')
-  .trim()
-  .replace(/\/+$/, '');
-const legacyOwnerEmail = process.env.LEGACY_OWNER_EMAIL?.trim().toLowerCase() ?? '';
-const sessionCookieName = 'todo_session';
-const stateCookieName = 'todo_oauth_state';
-const sessionMaxAgeSeconds = 30 * 24 * 60 * 60;
-const secureCookiesInProduction = process.env.NODE_ENV === 'production';
+// Temporary local mode: the app runs as a single local profile with no
+// sign-in. This will be replaced when a new account system is added.
+const localUser: UserProfile = {
+  sub: process.env.LOCAL_USER_SUB?.trim() || 'local-user',
+  email: (process.env.LOCAL_USER_EMAIL?.trim() || 'local@localhost').toLowerCase(),
+  name: process.env.LOCAL_USER_NAME?.trim() || 'Local User',
+  picture: null,
+};
 
 const userDatabases = new Map<string, Database>();
 const userLoads = new Map<string, Promise<Database>>();
@@ -128,7 +118,6 @@ const teamLoads = new Map<string, Promise<Team | null>>();
 const teamQueues = new Map<string, Promise<unknown>>();
 let writeQueue: Promise<void> = Promise.resolve();
 let teamWriteQueue: Promise<void> = Promise.resolve();
-let sessionSecret = '';
 let legacyClaimPromise: Promise<Database> | null = null;
 
 function emptyDatabase(): Database {
@@ -351,7 +340,7 @@ function normalizeDatabase(value: unknown): Database {
 }
 
 function userDatabaseFile(sub: string): string {
-  const key = createHash('sha256').update(`google:${sub}`).digest('hex').slice(0, 40);
+  const key = createHash('sha256').update(`user:${sub}`).digest('hex').slice(0, 40);
   return path.join(usersDir, `${key}.json`);
 }
 
@@ -480,17 +469,14 @@ async function readLegacyDatabase(): Promise<Database> {
   }
 }
 
-function claimLegacyDatabase(user: AuthUser): Promise<Database> {
+function claimLegacyDatabase(): Promise<Database> {
   if (legacyClaimPromise) return Promise.resolve(emptyDatabase());
-  if (legacyOwnerEmail && user.email.toLowerCase() !== legacyOwnerEmail) {
-    return Promise.resolve(emptyDatabase());
-  }
 
   legacyClaimPromise = readLegacyDatabase();
   return legacyClaimPromise;
 }
 
-async function loadUserDatabase(user: AuthUser): Promise<Database> {
+async function loadUserDatabase(user: UserProfile): Promise<Database> {
   const file = userDatabaseFile(user.sub);
 
   try {
@@ -498,7 +484,7 @@ async function loadUserDatabase(user: AuthUser): Promise<Database> {
     return normalizeDatabase(JSON.parse(raw));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      const database = await claimLegacyDatabase(user);
+      const database = await claimLegacyDatabase();
       await persist(user.sub, database);
       return database;
     }
@@ -517,7 +503,7 @@ async function loadUserDatabase(user: AuthUser): Promise<Database> {
   }
 }
 
-function ensureUserDatabase(user: AuthUser): Promise<Database> {
+function ensureUserDatabase(user: UserProfile): Promise<Database> {
   const cached = userDatabases.get(user.sub);
   if (cached) return Promise.resolve(cached);
 
@@ -542,297 +528,13 @@ async function initializeStorage(): Promise<void> {
   await fs.mkdir(teamsDir, { recursive: true });
 }
 
-async function resolveSessionSecret(): Promise<string> {
-  const fromEnv = process.env.SESSION_SECRET?.trim() ?? '';
-  if (fromEnv.length >= 32) return fromEnv;
-  if (fromEnv) {
-    console.warn(
-      'SESSION_SECRET is shorter than 32 characters. Generating a stronger secret in data/.session-secret instead.',
-    );
-  }
-
-  const secretFile = path.join(dataDir, '.session-secret');
-  try {
-    const saved = (await fs.readFile(secretFile, 'utf8')).trim();
-    if (saved.length >= 32) return saved;
-  } catch {
-    // Create a new secret below.
-  }
-
-  const generated = randomBytes(48).toString('hex');
-  await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(secretFile, generated, { mode: 0o600 });
-  console.warn(
-    'SESSION_SECRET is not set. Created data/.session-secret. Set SESSION_SECRET in production so sessions survive restarts and redeploys.',
-  );
-  return generated;
-}
-
-function parseCookies(req: Request): Record<string, string> {
-  const header = req.headers.cookie;
-  if (!header) return {};
-
-  const cookies: Record<string, string> = {};
-  for (const part of header.split(';')) {
-    const index = part.indexOf('=');
-    if (index === -1) continue;
-
-    const name = part.slice(0, index).trim();
-    const value = part.slice(index + 1).trim();
-    if (!name) continue;
-
-    try {
-      cookies[name] = decodeURIComponent(value);
-    } catch {
-      cookies[name] = value;
-    }
-  }
-
-  return cookies;
-}
-
-function cookieFlags(req: Request, maxAgeSeconds: number): string {
-  const flags = [
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
-  ];
-
-  if (req.secure || secureCookiesInProduction) {
-    flags.push('Secure');
-  }
-
-  return flags.join('; ');
-}
-
-function setCookie(
-  req: Request,
-  res: Response,
-  name: string,
-  value: string,
-  maxAgeSeconds: number,
-): void {
-  res.append('Set-Cookie', `${name}=${encodeURIComponent(value)}; ${cookieFlags(req, maxAgeSeconds)}`);
-}
-
-function clearCookie(req: Request, res: Response, name: string): void {
-  res.append(
-    'Set-Cookie',
-    `${name}=; ${cookieFlags(req, 0)}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
-  );
-}
-
-function signValue(value: string): string {
-  return createHmac('sha256', sessionSecret).update(value).digest('base64url');
-}
-
-function createSessionToken(user: AuthUser): string {
-  const payload = Buffer.from(
-    JSON.stringify({ ...user, exp: Date.now() + sessionMaxAgeSeconds * 1000 }),
-    'utf8',
-  ).toString('base64url');
-
-  return `${payload}.${signValue(payload)}`;
-}
-
-function parseSessionToken(token: string | undefined): AuthUser | null {
-  if (!token) return null;
-
-  const separator = token.lastIndexOf('.');
-  if (separator <= 0) return null;
-
-  const payload = token.slice(0, separator);
-  const signature = token.slice(separator + 1);
-  const expected = signValue(payload);
-
-  if (
-    signature.length !== expected.length ||
-    !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
-  ) {
-    return null;
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-    if (!isRecord(parsed)) return null;
-    if (typeof parsed.exp !== 'number' || parsed.exp < Date.now()) return null;
-    if (typeof parsed.sub !== 'string' || !parsed.sub) return null;
-    if (typeof parsed.email !== 'string' || !parsed.email) return null;
-
-    return {
-      sub: parsed.sub,
-      email: parsed.email,
-      name: typeof parsed.name === 'string' && parsed.name ? parsed.name : parsed.email,
-      picture: typeof parsed.picture === 'string' ? parsed.picture : null,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function getSessionUser(req: Request): AuthUser | null {
-  return parseSessionToken(parseCookies(req)[sessionCookieName]);
-}
-
-function getBaseUrl(req: Request): string {
-  if (configuredAppUrl) return configuredAppUrl;
-  return `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
-}
-
-function getRedirectUri(req: Request): string {
-  const explicit = process.env.OAUTH_REDIRECT_URI?.trim();
-  if (explicit) return explicit;
-  return `${getBaseUrl(req)}/api/auth/google/callback`;
-}
-
-function authErrorRedirect(res: Response, code: string): void {
-  res.redirect(`/?auth_error=${encodeURIComponent(code)}`);
-}
-
-function normalizeGoogleProfile(value: unknown): AuthUser | null {
-  if (!isRecord(value)) return null;
-  if (value.email_verified !== true) return null;
-  if (typeof value.sub !== 'string' || !value.sub) return null;
-  if (typeof value.email !== 'string' || !value.email) return null;
-
-  return {
-    sub: value.sub,
-    email: value.email,
-    name:
-      typeof value.name === 'string' && value.name.trim() ? value.name.trim() : value.email,
-    picture: typeof value.picture === 'string' ? value.picture : null,
-  };
-}
-
-async function handleGoogleCallback(req: Request, res: Response): Promise<void> {
-  const stateCookie = parseCookies(req)[stateCookieName];
-  clearCookie(req, res, stateCookieName);
-
-  const queryState = typeof req.query.state === 'string' ? req.query.state : '';
-  const code = typeof req.query.code === 'string' ? req.query.code : '';
-  const oauthError = typeof req.query.error === 'string' ? req.query.error : '';
-
-  if (oauthError) {
-    authErrorRedirect(res, 'access_denied');
-    return;
-  }
-
-  if (!stateCookie || !queryState || stateCookie !== queryState) {
-    authErrorRedirect(res, 'state_mismatch');
-    return;
-  }
-
-  if (!code) {
-    authErrorRedirect(res, 'missing_code');
-    return;
-  }
-
-  if (!googleConfigured) {
-    authErrorRedirect(res, 'not_configured');
-    return;
-  }
-
-  try {
-    const redirectUri = getRedirectUri(req);
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code,
-        client_id: googleClientId,
-        client_secret: googleClientSecret,
-        redirect_uri: redirectUri,
-        grant_type: 'authorization_code',
-      }),
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (!tokenResponse.ok) {
-      console.error(
-        'Google token exchange failed:',
-        tokenResponse.status,
-        await tokenResponse.text(),
-      );
-      authErrorRedirect(res, 'oauth_failed');
-      return;
-    }
-
-    const tokens: unknown = await tokenResponse.json();
-    const accessToken = isRecord(tokens) && tokens.access_token;
-    if (typeof accessToken !== 'string') {
-      console.error('Google token response did not contain an access token.');
-      authErrorRedirect(res, 'oauth_failed');
-      return;
-    }
-
-    const profileResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (!profileResponse.ok) {
-      console.error('Google profile request failed:', profileResponse.status);
-      authErrorRedirect(res, 'profile_failed');
-      return;
-    }
-
-    const user = normalizeGoogleProfile(await profileResponse.json());
-    if (!user) {
-      authErrorRedirect(res, 'profile_failed');
-      return;
-    }
-
-    await ensureUserDatabase(user);
-    setCookie(
-      req,
-      res,
-      sessionCookieName,
-      createSessionToken(user),
-      sessionMaxAgeSeconds,
-    );
-    res.redirect('/');
-  } catch (error) {
-    console.error('Google sign-in failed:', error);
-    authErrorRedirect(res, 'oauth_failed');
-  }
-}
-
-async function requireAuth(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> {
-  const user = getSessionUser(req);
-  if (!user) {
-    res.status(401).json({ error: 'Please sign in with Google to continue.' });
-    return;
-  }
-
-  try {
-    const database = await ensureUserDatabase(user);
-    const authenticated = req as AuthenticatedRequest;
-    authenticated.authUser = user;
-    authenticated.userDatabase = database;
-    next();
-  } catch (error) {
-    next(error);
-  }
-}
-
-function getAuthUser(req: Request): AuthUser {
-  const user = (req as AuthenticatedRequest).authUser;
-  if (!user) throw new Error('Authenticated user missing from request.');
-  return user;
-}
-
 function getUserDatabase(req: Request): Database {
-  const database = (req as AuthenticatedRequest).userDatabase;
+  const database = (req as AppRequest).userDatabase;
   if (!database) throw new Error('User database missing from request.');
   return database;
 }
 
-function teamRole(team: Team, user: AuthUser): 'owner' | 'member' | null {
+function teamRole(team: Team, user: UserProfile): 'owner' | 'member' | null {
   const email = user.email.toLowerCase();
   if (team.ownerSub === user.sub || team.ownerEmail === email) return 'owner';
   if (
@@ -845,7 +547,7 @@ function teamRole(team: Team, user: AuthUser): 'owner' | 'member' | null {
   return null;
 }
 
-function personRefForUser(user: AuthUser): PersonRef {
+function personRefForUser(user: UserProfile): PersonRef {
   return {
     sub: user.sub,
     email: user.email.toLowerCase(),
@@ -861,14 +563,14 @@ function memberToPersonRef(member: TeamMember): PersonRef {
   };
 }
 
-function isSamePerson(ref: PersonRef | null | undefined, user: AuthUser): boolean {
+function isSamePerson(ref: PersonRef | null | undefined, user: UserProfile): boolean {
   if (!ref) return false;
   return (
     ref.sub === user.sub || ref.email.toLowerCase() === user.email.toLowerCase()
   );
 }
 
-function canCompleteTeamTask(team: Team, task: TeamTask, user: AuthUser): boolean {
+function canCompleteTeamTask(team: Team, task: TeamTask, user: UserProfile): boolean {
   return (
     teamRole(team, user) === 'owner' ||
     isSamePerson(task.author, user) ||
@@ -876,11 +578,11 @@ function canCompleteTeamTask(team: Team, task: TeamTask, user: AuthUser): boolea
   );
 }
 
-function canDeleteTeamTask(team: Team, task: TeamTask, user: AuthUser): boolean {
+function canDeleteTeamTask(team: Team, task: TeamTask, user: UserProfile): boolean {
   return teamRole(team, user) === 'owner' || isSamePerson(task.author, user);
 }
 
-function teamSummary(team: Team, user: AuthUser) {
+function teamSummary(team: Team, user: UserProfile) {
   return {
     id: team.id,
     name: team.name,
@@ -893,7 +595,7 @@ function teamSummary(team: Team, user: AuthUser) {
   };
 }
 
-function syncMemberProfile(team: Team, user: AuthUser): boolean {
+function syncMemberProfile(team: Team, user: UserProfile): boolean {
   const email = user.email.toLowerCase();
   const member = team.members.find((entry) => entry.email === email);
   if (!member) return false;
@@ -939,7 +641,7 @@ function syncMemberProfile(team: Team, user: AuthUser): boolean {
   return changed;
 }
 
-async function syncAndPersistMemberProfile(team: Team, user: AuthUser): Promise<void> {
+async function syncAndPersistMemberProfile(team: Team, user: UserProfile): Promise<void> {
   if (!syncMemberProfile(team, user)) return;
 
   try {
@@ -1000,7 +702,7 @@ async function requireTeamMember(
     return null;
   }
 
-  const user = getAuthUser(req);
+  const user = localUser;
   const team = await ensureTeam(id);
 
   if (!team) {
@@ -1046,7 +748,7 @@ function commit(
   next: NextFunction,
   mutate: (database: Database) => void,
 ): void {
-  const user = getAuthUser(req);
+  const user = localUser;
   const database = getUserDatabase(req);
   const previousRun = userQueues.get(user.sub) ?? Promise.resolve();
 
@@ -1071,47 +773,18 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '28kb' }));
 
-app.get('/api/auth/me', (req, res) => {
-  res.json({ user: getSessionUser(req), configured: googleConfigured });
-});
-
-app.get('/api/auth/google', (req, res) => {
-  if (!googleConfigured) {
-    res.status(503).json({ error: 'Google sign-in is not configured on this server.' });
-    return;
-  }
-
-  const state = randomBytes(24).toString('hex');
-  setCookie(req, res, stateCookieName, state, 10 * 60);
-
-  const params = new URLSearchParams({
-    client_id: googleClientId,
-    redirect_uri: getRedirectUri(req),
-    response_type: 'code',
-    scope: 'openid email profile',
-    state,
-    prompt: 'select_account',
-  });
-
-  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
-});
-
-app.get('/api/auth/google/callback', (req, res) => {
-  handleGoogleCallback(req, res).catch((error: unknown) => {
-    console.error('Google callback failed:', error);
-    if (!res.headersSent) authErrorRedirect(res, 'oauth_failed');
-  });
-});
-
-app.post('/api/auth/logout', (req, res) => {
-  clearCookie(req, res, sessionCookieName);
-  clearCookie(req, res, stateCookieName);
-  res.json({ ok: true });
+app.get('/api/me', (_req, res) => {
+  res.json({ user: localUser });
 });
 
 const api = express.Router();
-api.use((req, res, next) => {
-  requireAuth(req, res, next).catch(next);
+api.use((req, _res, next) => {
+  ensureUserDatabase(localUser)
+    .then((database) => {
+      (req as AppRequest).userDatabase = database;
+      next();
+    })
+    .catch(next);
 });
 
 api.get('/state', (req, res) => {
@@ -1120,8 +793,8 @@ api.get('/state', (req, res) => {
 
 api.get(
   '/teams',
-  asyncHandler(async (req, res) => {
-    const user = getAuthUser(req);
+  asyncHandler(async (_req, res) => {
+    const user = localUser;
     const teams = (await listTeams())
       .filter((team) => teamRole(team, user) !== null)
       .sort((first, second) => first.createdAt.localeCompare(second.createdAt));
@@ -1132,7 +805,7 @@ api.get(
 );
 
 api.post('/teams', (req, res, next) => {
-  const user = getAuthUser(req);
+  const user = localUser;
   const body = req.body as { name?: unknown } | undefined;
   const name = parseTeamName(body?.name);
 
@@ -1178,7 +851,7 @@ api.get(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    await syncAndPersistMemberProfile(team, getAuthUser(req));
+    await syncAndPersistMemberProfile(team, localUser);
     res.json(team);
   }),
 );
@@ -1230,7 +903,7 @@ api.delete(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = getAuthUser(req);
+    const user = localUser;
     const email = normalizeEmail(req.params.email);
     if (!email) {
       res.status(400).json({ error: 'Enter a valid email address.' });
@@ -1298,7 +971,7 @@ api.post(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = getAuthUser(req);
+    const user = localUser;
     const body = req.body as
       | { text?: unknown; dueAt?: unknown; assigneeEmail?: unknown }
       | undefined;
@@ -1356,7 +1029,7 @@ api.post(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = getAuthUser(req);
+    const user = localUser;
     const task = team.tasks.find((entry) => entry.id === req.params.taskId);
 
     if (!task) {
@@ -1390,7 +1063,7 @@ api.post(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = getAuthUser(req);
+    const user = localUser;
     const task = team.tasks.find((entry) => entry.id === req.params.taskId);
 
     if (!task) {
@@ -1444,7 +1117,7 @@ api.delete(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = getAuthUser(req);
+    const user = localUser;
     const task = team.tasks.find((entry) => entry.id === req.params.taskId);
     if (!task) {
       res.status(404).json({ error: 'Task not found.' });
@@ -1477,7 +1150,7 @@ api.delete(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = getAuthUser(req);
+    const user = localUser;
     const task = team.tasks.find((entry) => entry.id === req.params.taskId);
     if (!task) {
       res.status(404).json({ error: 'Task not found.' });
@@ -1693,15 +1366,10 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 await initializeStorage();
-sessionSecret = await resolveSessionSecret();
 
 const server = app.listen(port, () => {
   console.log(`API listening on http://localhost:${port}`);
-  console.log(
-    googleConfigured
-      ? 'Google sign-in is configured.'
-      : 'Google sign-in is NOT configured. Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to .env.',
-  );
+  console.log(`Running without sign-in as ${localUser.name} <${localUser.email}>.`);
   if (hasBuild) {
     console.log(`App available at http://localhost:${port}`);
   }

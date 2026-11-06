@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import type { AuthUser, Team, TeamMember } from '../types';
+import type { Team, TeamMember, UserProfile } from '../types';
 import { PlusIcon, UserIcon, UsersIcon } from './icons';
 
 function initials(name: string): string {
@@ -16,7 +16,7 @@ function initials(name: string): string {
 
 interface MembersPanelProps {
   team: Team;
-  currentUser: AuthUser;
+  currentUser: UserProfile;
   onInvite: (email: string) => Promise<boolean>;
   onRemove: (email: string) => Promise<boolean>;
   onDeleteTeam: () => void;
@@ -66,8 +66,8 @@ export default function MembersPanel({
           <div>
             <h3>Invite a teammate</h3>
             <p>
-              Add the Google email they use to sign in. They are added right away and
-              will see this team automatically when they open or return to the app.
+              Add the email address they use for this app. They are added right away
+              and will see this team automatically when they open the app.
             </p>
           </div>
         </div>
