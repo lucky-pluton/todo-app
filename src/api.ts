@@ -41,8 +41,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function getMe(): Promise<{ user: UserProfile }> {
-  return request('/api/me');
+export function getMe(): Promise<{ user: UserProfile | null }> {
+  return request('/api/auth/me');
+}
+
+export function register(
+  name: string,
+  email: string,
+  password: string,
+): Promise<{ user: UserProfile }> {
+  return request('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ name, email, password }),
+  });
+}
+
+export function login(
+  email: string,
+  password: string,
+): Promise<{ user: UserProfile }> {
+  return request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return request('/api/auth/logout', { method: 'POST' });
 }
 
 export function getState(): Promise<AppState> {

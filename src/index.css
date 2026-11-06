@@ -155,6 +155,30 @@ h1 {
   white-space: nowrap;
 }
 
+.sign-out-btn {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.sign-out-btn:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.sign-out-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* Workspace layout and sidebar */
 
 .workspace {
@@ -1833,6 +1857,166 @@ h1 {
   font-size: 11.5px;
 }
 
+/* Authentication */
+
+.login-page {
+  min-height: calc(100vh - 104px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 0;
+}
+
+.login-card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  padding: 30px 28px 24px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.login-mark {
+  align-self: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 16px;
+  border-radius: 14px;
+}
+
+.login-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.login-tabs button {
+  flex: 1;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-tabs button:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.login-tabs button.is-active {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: 0 2px 8px -3px rgba(32, 36, 66, 0.35);
+}
+
+.login-tabs button:disabled {
+  cursor: progress;
+}
+
+.login-card h1 {
+  margin: 20px 0 6px;
+  font-size: 24px;
+  text-align: center;
+}
+
+.login-subtitle {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.login-field input {
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+
+.login-field input::placeholder {
+  color: rgba(118, 124, 143, 0.75);
+}
+
+.login-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px rgba(91, 91, 214, 0.12);
+}
+
+.login-field input:disabled {
+  opacity: 0.65;
+}
+
+.login-error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.login-submit {
+  margin-top: 4px;
+  padding: 11px 16px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-submit:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+.login-submit:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.login-note {
+  margin: 16px 0 0;
+  color: rgba(118, 124, 143, 0.9);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 /* Startup */
 
 .startup-page {
@@ -1934,6 +2118,14 @@ h1 {
   .today-badge,
   .account-name {
     display: none;
+  }
+
+  .login-page {
+    min-height: calc(100vh - 72px);
+  }
+
+  .login-card {
+    padding: 24px 20px 20px;
   }
 
   .header-right {

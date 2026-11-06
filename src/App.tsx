@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './api';
-import { CheckIcon } from './components/icons';
+import { CheckIcon, LogOutIcon } from './components/icons';
+import LoginScreen from './components/LoginScreen';
 import PersonalView from './components/PersonalView';
 import Sidebar from './components/Sidebar';
 import TeamView from './components/TeamView';
@@ -39,6 +40,7 @@ function teamSummaryFrom(team: Team, role: TeamRole): TeamSummary {
 export default function App() {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [userLoading, setUserLoading] = useState(true);
+  const [sessionMessage, setSessionMessage] = useState<string | null>(null);
   const [state, setState] = useState<AppState>(emptyState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,7 +76,7 @@ export default function App() {
           setError(
             loadError instanceof Error
               ? loadError.message
-              : 'Could not load your local profile.',
+              : 'Could not reach the server.',
           );
         }
       } finally {
@@ -87,11 +89,72 @@ export default function App() {
     };
   }, []);
 
-  const handleActionError = useCallback((actionError: unknown) => {
-    setError(
-      actionError instanceof Error ? actionError.message : 'Something went wrong.',
-    );
+  const resetWorkspace = useCallback(() => {
+    queue.current = Promise.resolve();
+    teamQueue.current = Promise.resolve();
+    teamRequest.current += 1;
+    setState(emptyState);
+    setLoading(true);
+    setFilter('all');
+    setTeams([]);
+    setTeamsLoading(false);
+    setView({ kind: 'personal' });
+    setTeam(null);
+    setTeamLoading(false);
+    setTeamFilter('all');
+    setTeamTab('tasks');
   }, []);
+
+  const handleSessionExpired = useCallback(() => {
+    resetWorkspace();
+    setUser(null);
+    setError(null);
+    setSessionMessage('Your session expired. Please sign in again.');
+  }, [resetWorkspace]);
+
+  const handleActionError = useCallback(
+    (actionError: unknown) => {
+      if (actionError instanceof api.ApiError && actionError.status === 401) {
+        handleSessionExpired();
+        return;
+      }
+
+      setError(
+        actionError instanceof Error ? actionError.message : 'Something went wrong.',
+      );
+    },
+    [handleSessionExpired],
+  );
+
+  const handleLogin = useCallback(
+    async (email: string, password: string) => {
+      const response = await api.login(email, password);
+      resetWorkspace();
+      setSessionMessage(null);
+      setError(null);
+      setUser(response.user);
+    },
+    [resetWorkspace],
+  );
+
+  const handleRegister = useCallback(
+    async (name: string, email: string, password: string) => {
+      const response = await api.register(name, email, password);
+      resetWorkspace();
+      setSessionMessage(null);
+      setError(null);
+      setUser(response.user);
+    },
+    [resetWorkspace],
+  );
+
+  const handleLogout = useCallback(() => {
+    void api.logout().catch(() => undefined);
+    resetWorkspace();
+    setSessionMessage(null);
+    setError(null);
+    setUser(null);
+  }, [resetWorkspace]);
 
   const updateTeamSummary = useCallback((next: Team) => {
     setTeams((current) =>
@@ -141,10 +204,13 @@ export default function App() {
     try {
       const response = await api.getTeams();
       setTeams(response.teams);
-    } catch {
-      // Quiet refresh: errors surface through the main actions instead.
+    } catch (refreshError) {
+      if (refreshError instanceof api.ApiError && refreshError.status === 401) {
+        handleSessionExpired();
+      }
+      // Quiet refresh: other errors surface through the main actions instead.
     }
-  }, []);
+  }, [handleSessionExpired]);
 
   const loadTeam = useCallback(
     async (id: string) => {
@@ -221,6 +287,11 @@ export default function App() {
           updateTeamSummary(next);
         })
         .catch((refreshError: unknown) => {
+          if (refreshError instanceof api.ApiError && refreshError.status === 401) {
+            handleSessionExpired();
+            return;
+          }
+
           if (
             refreshError instanceof api.ApiError &&
             (refreshError.status === 403 || refreshError.status === 404)
@@ -246,7 +317,7 @@ export default function App() {
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', refresh);
     };
-  }, [view, updateTeamSummary]);
+  }, [view, updateTeamSummary, handleSessionExpired]);
 
   const runAction = useCallback(
     (action: () => Promise<AppState>): Promise<boolean> => {
@@ -504,12 +575,11 @@ export default function App() {
 
   if (!user) {
     return (
-      <main className="startup-page" role="alert">
-        <p>{error ?? 'Could not load your local profile.'}</p>
-        <button type="button" onClick={() => window.location.reload()}>
-          Reload
-        </button>
-      </main>
+      <LoginScreen
+        onLogin={handleLogin}
+        onRegister={handleRegister}
+        initialError={sessionMessage ?? error}
+      />
     );
   }
 
@@ -544,6 +614,15 @@ export default function App() {
             <span className="account-name" title={user.email}>
               {user.name}
             </span>
+            <button
+              type="button"
+              className="sign-out-btn"
+              onClick={handleLogout}
+              title="Sign out"
+              aria-label="Sign out"
+            >
+              <LogOutIcon size={14} />
+            </button>
           </div>
         </div>
       </header>
@@ -626,7 +705,7 @@ export default function App() {
       </div>
 
       <p className="storage-note">
-        Personal tasks are private to your local profile. Team tasks are shared with
+        Personal tasks are private to your account. Team tasks are shared with
         everyone in that team.
       </p>
     </main>

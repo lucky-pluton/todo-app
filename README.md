@@ -20,9 +20,9 @@ on the server.
 ---
 
 > [!IMPORTANT]
-> **Local mode — no sign-in.** Sign-in has been intentionally removed for now.
-> The app runs as a single local profile and is fully usable offline. A new
-> account system will replace this mode in a later change.
+> **Email and password accounts.** Each account has its own private personal
+> tasks and history. Teams are shared, and invited email addresses link to an
+> account automatically when that person registers or signs in.
 
 ---
 
@@ -51,9 +51,9 @@ on the server.
 - **Live refresh** so open team boards pick up changes without a reload.
 - **File-based persistence** with atomic writes, so data survives restarts.
 
-The current build runs without authentication, using one local profile. Personal
-tasks are stored for that profile, and teams are stored separately so they can
-be shared again once accounts are added.
+The app supports multiple email/password accounts. Personal tasks are stored per
+account, while teams are stored separately so members can share them. Accounts
+are protected with `scrypt` password hashes and signed session cookies.
 
 ---
 
@@ -75,6 +75,13 @@ be shared again once accounts are added.
 - Every shared task and update shows its author and assignee.
 - Team boards and the sidebar refresh every 20 seconds and when the tab regains
   focus.
+
+### 🔐 Accounts & Sessions
+- Email and password registration and sign-in.
+- Passwords hashed with Node's `scrypt` and a unique random salt.
+- Stateless, HMAC-signed session cookie (`HttpOnly`, `SameSite=Lax`, 30 days).
+- Every personal task and history entry belongs to exactly one account.
+- Invited team emails link to the matching account on registration or sign-in.
 
 ### 🛡 Reliable Storage
 - Plain JSON files in `data/` — no database server required.
@@ -103,17 +110,19 @@ flowchart TD
     API["Express API\n(:3001)"]
     Storage["JSON Storage\n(data/)"]
 
-    Client -- "REST API calls (/api)" --> API
+    Client -- "REST API calls (/api)\nwith session cookie" --> API
     API -- "Atomic reads / writes" --> Storage
 
     subgraph Data Store
+        Storage --> Accounts["data/accounts.json\n(email + scrypt hash)"]
         Storage --> Users["data/users/<hash>.json\n(personal tasks & history)"]
         Storage --> Teams["data/teams/<team-id>.json\n(shared tasks, members & history)"]
     end
 ```
 
 In development, Vite proxies `/api` requests to the Express server. In
-production, Express serves both the built frontend and the API.
+production, Express serves both the built frontend and the API. Personal API
+routes require a valid session.
 
 ---
 
@@ -122,15 +131,18 @@ production, Express serves both the built frontend and the API.
 ```text
 todo-app/
 ├── data/                       # File-based storage (git-ignored)
+│   ├── accounts.json           # Email/password accounts
+│   ├── .session-secret         # Generated when SESSION_SECRET is unset
 │   ├── users/                  # Personal task files (<hash>.json)
 │   └── teams/                  # Team files (<team-id>.json)
 ├── server/
-│   └── index.ts                # Express API, storage, and validation
+│   └── index.ts                # Express API, auth, storage, and validation
 ├── src/
 │   ├── components/             # React UI components
 │   │   ├── FilterTabs.tsx
 │   │   ├── HistoryItem.tsx
 │   │   ├── HistoryList.tsx
+│   │   ├── LoginScreen.tsx
 │   │   ├── MembersPanel.tsx
 │   │   ├── PersonalView.tsx
 │   │   ├── Sidebar.tsx
@@ -170,7 +182,7 @@ todo-app/
 npm install
 ```
 
-### 2. Configure the local profile
+### 2. Configure accounts and storage
 
 Copy the example environment file:
 
@@ -178,27 +190,31 @@ Copy the example environment file:
 cp .env.example .env
 ```
 
-`.env` controls the temporary local profile:
+`.env` is optional for a fresh install. Configure it when you want a fixed
+session secret, a custom data directory, or to migrate data from the old
+no-sign-in local profile:
 
 ```ini
-LOCAL_USER_SUB=local-user
-LOCAL_USER_EMAIL=local@localhost
-LOCAL_USER_NAME=Local User
-
 # Optional
+# SESSION_SECRET=replace-with-at-least-32-random-characters
+# DATA_DIR=
+# LEGACY_LOCAL_SUB=local-user
+# LEGACY_LOCAL_EMAIL=local@localhost
 # PORT=3001
 ```
 
 | Variable | Required | Default | Description |
 | :--- | :---: | :--- | :--- |
-| `LOCAL_USER_SUB` | No | `local-user` | Stable ID for the local profile and its data file |
-| `LOCAL_USER_EMAIL` | No | `local@localhost` | Display email for the local profile |
-| `LOCAL_USER_NAME` | No | `Local User` | Display name for the local profile |
+| `SESSION_SECRET` | No | Generated in `data/.session-secret` | Secret used to sign session cookies (32+ characters) |
+| `DATA_DIR` | No | `./data` | Directory for accounts, users, and teams |
+| `LEGACY_LOCAL_SUB` | No | — | Old local profile ID whose data the first account should adopt |
+| `LEGACY_LOCAL_EMAIL` | No | — | Old local profile email used to match teams |
 | `PORT` | No | `3001` | API server port |
 
-To keep existing local tasks, set `LOCAL_USER_SUB` to the ID used previously.
-The migration to the new storage naming is handled automatically the first time
-the server starts.
+The legacy variables are only needed when upgrading from the previous local
+mode. The **first account created** adopts that profile's personal tasks and
+team ownership; every later account starts with an empty personal list. Leave
+them unset for a fresh install.
 
 ### 3. Run locally
 
@@ -209,11 +225,18 @@ npm run dev
 - **App:** [http://localhost:5173](http://localhost:5173)
 - **API:** [http://localhost:3001](http://localhost:3001)
 
-Open the app in your browser — no sign-in is required.
+Open the app and create the first account. If legacy migration is configured,
+that account inherits the previous personal tasks and team ownership.
 
 ---
 
 ## 💻 Using the App
+
+### Accounts
+1. Open the app and choose **Create account**.
+2. Enter your name, email, and a password of at least 8 characters.
+3. After registering you are signed in automatically. Use **Sign in** on later
+   visits, and the sign-out button in the header to switch accounts.
 
 ### Personal tasks
 1. Open **My Tasks** in the sidebar.
@@ -229,7 +252,8 @@ Open the app in your browser — no sign-in is required.
 
 ### Teams
 1. Click **New team**, enter a name, and create it.
-2. Open the **Members** tab and invite people by email.
+2. Open the **Members** tab and invite people by email. When an invited email
+   registers or signs in, it links to that account automatically.
 3. Add shared tasks and assign them to a teammate.
 4. Team owners can remove members or delete the team; members can leave.
 
@@ -239,8 +263,12 @@ Open the app in your browser — no sign-in is required.
 
 Everything is stored under `data/` on the server:
 
+- **Accounts:** `data/accounts.json`, containing each account's email, name, and
+  salted `scrypt` password hash. Plain-text passwords are never stored.
+- **Sessions:** signed `todo_session` cookies. The signing secret comes from
+  `SESSION_SECRET` or the generated `data/.session-secret` file.
 - **Personal data:** `data/users/<hash>.json`, where `<hash>` is derived from
-  the profile ID (`sub`). This keeps personal tasks and history separate.
+  the account ID (`sub`). This keeps each user's tasks and history separate.
 - **Teams:** `data/teams/<team-id>.json`, including members, tasks, comments,
   and history.
 - **Atomic writes:** updates are written to a temporary file and renamed into
@@ -255,13 +283,19 @@ committed.
 
 ## 🔌 REST API Reference
 
-The API runs without authentication in local mode. All endpoints are served
-under `/api`.
+All endpoints are served under `/api`. Personal and team endpoints require a
+valid `todo_session` cookie and return `401` otherwise.
 
-### Profile
+### Authentication
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/me` | Return the current local profile |
+| `GET` | `/api/auth/me` | Return the signed-in account, or `null` |
+| `POST` | `/api/auth/register` | Create an account (`{ name, email, password }`) |
+| `POST` | `/api/auth/login` | Sign in (`{ email, password }`) |
+| `POST` | `/api/auth/logout` | Clear the session cookie |
+
+Passwords must be 8–200 characters. Duplicate email registration returns `409`,
+and invalid credentials return a generic `401` response.
 
 ### Personal Workspace
 | Method | Endpoint | Description |
@@ -277,7 +311,7 @@ under `/api`.
 ### Teams & Shared Tasks
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/api/teams` | List teams for the current profile |
+| `GET` | `/api/teams` | List teams for the signed-in account |
 | `POST` | `/api/teams` | Create a team (`{ name }`) |
 | `GET` | `/api/teams/:id` | Get a team with members, tasks, and history |
 | `DELETE` | `/api/teams/:id` | Delete a team (owner only) |
@@ -327,4 +361,6 @@ under `/api`.
    ```
 
 Express serves the built files from `dist/` and exposes the same `/api` routes.
-Because local mode has no credentials or sessions, no extra secrets are required.
+Set a long `SESSION_SECRET` in production and serve over HTTPS so the session
+cookie is sent with the `Secure` flag. Back up `data/` to keep accounts, personal
+tasks, and teams.

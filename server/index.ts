@@ -1,10 +1,20 @@
-import { createHash, randomUUID } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  scrypt as scryptCallback,
+  timingSafeEqual,
+} from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { loadEnvFile } from 'node:process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
+
+const scrypt = promisify(scryptCallback);
 
 interface PersonRef {
   sub: string | null;
@@ -75,7 +85,17 @@ interface UserProfile {
   picture: string | null;
 }
 
+interface Account {
+  id: string;
+  email: string;
+  name: string;
+  passwordHash: string;
+  passwordSalt: string;
+  createdAt: string;
+}
+
 interface AppRequest extends Request {
+  user?: UserProfile;
   userDatabase?: Database;
 }
 
@@ -89,9 +109,13 @@ try {
   }
 }
 
-const dataDir = path.join(projectRoot, 'data');
+const dataDir = process.env.DATA_DIR?.trim()
+  ? path.resolve(process.env.DATA_DIR.trim())
+  : path.join(projectRoot, 'data');
 const usersDir = path.join(dataDir, 'users');
 const teamsDir = path.join(dataDir, 'teams');
+const accountsFile = path.join(dataDir, 'accounts.json');
+const sessionSecretFile = path.join(dataDir, '.session-secret');
 const legacyDataFile = path.join(dataDir, 'tasks.json');
 const distDir = path.join(projectRoot, 'dist');
 const port = Number(process.env.PORT) || 3001;
@@ -99,17 +123,37 @@ const maxTextLength = 300;
 const maxCommentLength = 500;
 const maxTeamNameLength = 60;
 const maxTeamMembers = 100;
+const maxEmailLength = 254;
+const maxNameLength = 60;
+const minPasswordLength = 8;
+const maxPasswordLength = 200;
+const scryptKeyLength = 64;
+const sessionCookieName = 'todo_session';
+const sessionMaxAgeSeconds = 30 * 24 * 60 * 60;
+const secureCookiesInProduction = process.env.NODE_ENV === 'production';
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Temporary local mode: the app runs as a single local profile with no
-// sign-in. This will be replaced when a new account system is added.
-const localUser: UserProfile = {
-  sub: process.env.LOCAL_USER_SUB?.trim() || 'local-user',
-  email: (process.env.LOCAL_USER_EMAIL?.trim() || 'local@localhost').toLowerCase(),
-  name: process.env.LOCAL_USER_NAME?.trim() || 'Local User',
-  picture: null,
-};
+// Before accounts existed, the app ran as a single env-configured local
+// profile. The first account created can adopt that profile's data so no
+// tasks or team ownership are lost.
+const legacyLocalSub = (
+  process.env.LEGACY_LOCAL_SUB ??
+  process.env.LOCAL_USER_SUB ??
+  ''
+).trim();
+const legacyLocalEmail = (
+  process.env.LEGACY_LOCAL_EMAIL ??
+  process.env.LOCAL_USER_EMAIL ??
+  ''
+)
+  .trim()
+  .toLowerCase();
 
+const accounts = new Map<string, Account>();
+const accountsByEmail = new Map<string, string>();
+let accountsLoaded = false;
+let accountQueue: Promise<unknown> = Promise.resolve();
+let sessionSecret = '';
 const userDatabases = new Map<string, Database>();
 const userLoads = new Map<string, Promise<Database>>();
 const userQueues = new Map<string, Promise<unknown>>();
@@ -144,8 +188,359 @@ function parseDueAt(value: unknown): string | null | undefined {
 function normalizeEmail(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const email = value.trim().toLowerCase();
-  if (!email || email.length > 254 || !emailPattern.test(email)) return null;
+  if (!email || email.length > maxEmailLength || !emailPattern.test(email)) return null;
   return email;
+}
+
+class HttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+  }
+}
+
+function normalizeAccount(value: unknown): Account | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || !value.id) return null;
+
+  const email = normalizeEmail(value.email);
+  if (!email) return null;
+
+  if (typeof value.passwordHash !== 'string' || !/^[0-9a-f]+$/i.test(value.passwordHash)) {
+    return null;
+  }
+  if (typeof value.passwordSalt !== 'string' || !/^[0-9a-f]+$/i.test(value.passwordSalt)) {
+    return null;
+  }
+
+  const name =
+    typeof value.name === 'string' && value.name.trim()
+      ? value.name.trim().slice(0, maxNameLength)
+      : email;
+  const createdAt =
+    typeof value.createdAt === 'string' &&
+    !Number.isNaN(new Date(value.createdAt).getTime())
+      ? value.createdAt
+      : new Date().toISOString();
+
+  return {
+    id: value.id,
+    email,
+    name,
+    passwordHash: value.passwordHash.toLowerCase(),
+    passwordSalt: value.passwordSalt.toLowerCase(),
+    createdAt,
+  };
+}
+
+function profileForAccount(account: Account): UserProfile {
+  return {
+    sub: account.id,
+    email: account.email,
+    name: account.name,
+    picture: null,
+  };
+}
+
+async function loadAccounts(): Promise<void> {
+  if (accountsLoaded) return;
+  accountsLoaded = true;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await fs.readFile(accountsFile, 'utf8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+
+    const backupFile = `${accountsFile}.corrupt-${Date.now()}`;
+    try {
+      await fs.rename(accountsFile, backupFile);
+      console.warn(
+        `Could not read ${path.basename(accountsFile)}. Backed it up to ${path.basename(backupFile)}.`,
+      );
+    } catch {
+      console.warn(`Could not read or back up ${path.basename(accountsFile)}.`);
+    }
+    return;
+  }
+
+  const list = Array.isArray(parsed)
+    ? parsed
+    : isRecord(parsed) && Array.isArray(parsed.accounts)
+      ? parsed.accounts
+      : [];
+
+  for (const item of list) {
+    const account = normalizeAccount(item);
+    if (!account || accounts.has(account.id) || accountsByEmail.has(account.email)) {
+      continue;
+    }
+    accounts.set(account.id, account);
+    accountsByEmail.set(account.email, account.id);
+  }
+}
+
+async function persistAccounts(): Promise<void> {
+  await fs.mkdir(dataDir, { recursive: true });
+  const tempFile = `${accountsFile}.tmp`;
+  const list = [...accounts.values()].sort((first, second) =>
+    first.createdAt.localeCompare(second.createdAt),
+  );
+  await fs.writeFile(tempFile, `${JSON.stringify(list, null, 2)}\n`, 'utf8');
+  await fs.rename(tempFile, accountsFile);
+}
+
+function withAccountLock<T>(run: () => Promise<T>): Promise<T> {
+  const result = accountQueue.catch(() => undefined).then(run);
+  accountQueue = result.catch(() => undefined);
+  return result;
+}
+
+async function hashPassword(password: string, salt: string): Promise<string> {
+  const derived = (await scrypt(password, salt, scryptKeyLength)) as unknown as Buffer;
+  return derived.toString('hex');
+}
+
+async function verifyPassword(
+  password: string,
+  account: Account,
+): Promise<boolean> {
+  const derived = (await scrypt(
+    password,
+    account.passwordSalt,
+    scryptKeyLength,
+  )) as unknown as Buffer;
+  const expected = Buffer.from(account.passwordHash, 'hex');
+  return (
+    derived.length === expected.length && timingSafeEqual(derived, expected)
+  );
+}
+
+function findAccountByEmail(email: string): Account | null {
+  const id = accountsByEmail.get(email);
+  return id ? accounts.get(id) ?? null : null;
+}
+
+async function authenticateAccount(
+  email: string,
+  password: string,
+): Promise<Account | null> {
+  const account = findAccountByEmail(email);
+  if (!account) {
+    // Spend roughly the same time as a real password check so a missing
+    // account is not obviously faster than a wrong password.
+    await hashPassword(password, 'missing-account');
+    return null;
+  }
+
+  return (await verifyPassword(password, account)) ? account : null;
+}
+
+async function registerAccount(
+  name: string,
+  email: string,
+  password: string,
+): Promise<Account> {
+  return withAccountLock(async () => {
+    await loadAccounts();
+
+    if (accountsByEmail.has(email)) {
+      throw new HttpError('An account with that email already exists.', 409);
+    }
+
+    const firstAccount = accounts.size === 0;
+    const passwordSalt = randomBytes(16).toString('hex');
+    const account: Account = {
+      id: randomUUID(),
+      email,
+      name,
+      passwordHash: await hashPassword(password, passwordSalt),
+      passwordSalt,
+      createdAt: new Date().toISOString(),
+    };
+
+    accounts.set(account.id, account);
+    accountsByEmail.set(account.email, account.id);
+
+    try {
+      await persistAccounts();
+    } catch (error) {
+      accounts.delete(account.id);
+      accountsByEmail.delete(account.email);
+      throw error;
+    }
+
+    if (firstAccount) {
+      await migrateLegacyProfile(account);
+    }
+
+    return account;
+  });
+}
+
+async function resolveSessionSecret(): Promise<string> {
+  const fromEnv = process.env.SESSION_SECRET?.trim() ?? '';
+  if (fromEnv.length >= 32) return fromEnv;
+  if (fromEnv) {
+    console.warn(
+      'SESSION_SECRET is shorter than 32 characters. Generating a stronger secret in data/.session-secret instead.',
+    );
+  }
+
+  try {
+    const saved = (await fs.readFile(sessionSecretFile, 'utf8')).trim();
+    if (saved.length >= 32) return saved;
+  } catch {
+    // Create a new secret below.
+  }
+
+  const generated = randomBytes(48).toString('hex');
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.writeFile(sessionSecretFile, generated, { mode: 0o600 });
+  console.warn(
+    `SESSION_SECRET is not set. Created ${path.join(path.basename(dataDir), path.basename(sessionSecretFile))} so sessions survive restarts.`,
+  );
+  return generated;
+}
+
+function parseCookies(req: Request): Record<string, string> {
+  const header = req.headers.cookie;
+  if (!header) return {};
+
+  const cookies: Record<string, string> = {};
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=');
+    if (index === -1) continue;
+
+    const name = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (!name) continue;
+
+    try {
+      cookies[name] = decodeURIComponent(value);
+    } catch {
+      cookies[name] = value;
+    }
+  }
+
+  return cookies;
+}
+
+function cookieFlags(req: Request, maxAgeSeconds: number): string {
+  const flags = [
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
+  ];
+
+  if (req.secure || secureCookiesInProduction) {
+    flags.push('Secure');
+  }
+
+  return flags.join('; ');
+}
+
+function setCookie(
+  req: Request,
+  res: Response,
+  name: string,
+  value: string,
+  maxAgeSeconds: number,
+): void {
+  res.append(
+    'Set-Cookie',
+    `${name}=${encodeURIComponent(value)}; ${cookieFlags(req, maxAgeSeconds)}`,
+  );
+}
+
+function clearCookie(req: Request, res: Response, name: string): void {
+  res.append(
+    'Set-Cookie',
+    `${name}=; ${cookieFlags(req, 0)}; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+  );
+}
+
+function signValue(value: string): string {
+  return createHmac('sha256', sessionSecret).update(value).digest('base64url');
+}
+
+function createSessionToken(account: Account): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      sub: account.id,
+      exp: Date.now() + sessionMaxAgeSeconds * 1000,
+    }),
+    'utf8',
+  ).toString('base64url');
+
+  return `${payload}.${signValue(payload)}`;
+}
+
+function parseSessionSub(token: string | undefined): string | null {
+  if (!token) return null;
+
+  const separator = token.lastIndexOf('.');
+  if (separator <= 0) return null;
+
+  const payload = token.slice(0, separator);
+  const signature = token.slice(separator + 1);
+  const expected = signValue(payload);
+
+  if (
+    signature.length !== expected.length ||
+    !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
+  ) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(
+      Buffer.from(payload, 'base64url').toString('utf8'),
+    );
+    if (!isRecord(parsed)) return null;
+    if (typeof parsed.exp !== 'number' || parsed.exp < Date.now()) return null;
+    if (typeof parsed.sub !== 'string' || !parsed.sub) return null;
+    return parsed.sub;
+  } catch {
+    return null;
+  }
+}
+
+function getSessionProfile(req: Request): UserProfile | null {
+  const sub = parseSessionSub(parseCookies(req)[sessionCookieName]);
+  if (!sub) return null;
+
+  const account = accounts.get(sub);
+  return account ? profileForAccount(account) : null;
+}
+
+function getAuthUser(req: Request): UserProfile {
+  const user = (req as AppRequest).user;
+  if (!user) throw new Error('Authenticated user missing from request.');
+  return user;
+}
+
+function parseAccountName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.trim();
+  if (!name || name.length > maxNameLength) return null;
+  return name;
+}
+
+function parseNewPassword(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (value.length < minPasswordLength || value.length > maxPasswordLength) return null;
+  return value;
+}
+
+function parseLoginPassword(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (!value || value.length > maxPasswordLength) return null;
+  return value;
 }
 
 function normalizePersonRef(value: unknown): PersonRef | null {
@@ -440,6 +835,102 @@ async function listTeams(): Promise<Team[]> {
   return teams.filter((team): team is Team => team !== null);
 }
 
+function matchesLegacyProfile(sub: string | null, email: string): boolean {
+  return (
+    (legacyLocalSub !== '' && sub === legacyLocalSub) ||
+    (legacyLocalEmail !== '' && email.toLowerCase() === legacyLocalEmail)
+  );
+}
+
+// The first registered account adopts the data created while the app ran
+// without sign-in. Later accounts start clean.
+async function migrateLegacyProfile(account: Account): Promise<void> {
+  if (!legacyLocalSub || legacyLocalSub === account.id) return;
+
+  const sourceFile = userDatabaseFile(legacyLocalSub);
+  const targetFile = userDatabaseFile(account.id);
+
+  try {
+    if (!(await fileExists(targetFile))) {
+      const database = normalizeDatabase(
+        JSON.parse(await fs.readFile(sourceFile, 'utf8')),
+      );
+      await persist(account.id, database);
+      userDatabases.set(account.id, database);
+      console.log(
+        `Adopted personal data from the previous local profile for ${account.email}.`,
+      );
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn('Could not adopt the previous local profile data:', error);
+    }
+  }
+
+  let migratedTeams = 0;
+
+  for (const team of await listTeams()) {
+    let changed = false;
+
+    if (matchesLegacyProfile(team.ownerSub, team.ownerEmail)) {
+      team.ownerSub = account.id;
+      team.ownerEmail = account.email;
+      changed = true;
+    }
+
+    for (const member of team.members) {
+      if (!matchesLegacyProfile(member.sub, member.email)) continue;
+      member.sub = account.id;
+      member.email = account.email;
+      member.name = account.name;
+      member.picture = null;
+      changed = true;
+    }
+
+    const seenEmails = new Set<string>();
+    const dedupedMembers = team.members.filter((member) => {
+      const email = member.email.toLowerCase();
+      if (seenEmails.has(email)) return false;
+      seenEmails.add(email);
+      return true;
+    });
+    if (dedupedMembers.length !== team.members.length) {
+      team.members = dedupedMembers;
+      changed = true;
+    }
+
+    const refreshRef = (ref: PersonRef | null | undefined): void => {
+      if (!ref || !matchesLegacyProfile(ref.sub, ref.email)) return;
+      ref.sub = account.id;
+      ref.email = account.email;
+      ref.name = account.name;
+    };
+
+    for (const task of team.tasks) {
+      refreshRef(task.author);
+      refreshRef(task.assignee);
+      for (const comment of task.comments) refreshRef(comment.author);
+    }
+    for (const entry of team.history) {
+      refreshRef(entry.author);
+      refreshRef(entry.assignee);
+      for (const comment of entry.comments) refreshRef(comment.author);
+    }
+
+    if (changed) {
+      teamDatabases.set(team.id, team);
+      await persistTeam(team);
+      migratedTeams += 1;
+    }
+  }
+
+  if (migratedTeams > 0) {
+    console.log(
+      `Linked ${migratedTeams} team${migratedTeams === 1 ? '' : 's'} to ${account.email}.`,
+    );
+  }
+}
+
 async function readLegacyDatabase(): Promise<Database> {
   try {
     await fs.access(legacyDataFile);
@@ -702,7 +1193,7 @@ async function requireTeamMember(
     return null;
   }
 
-  const user = localUser;
+  const user = getAuthUser(req);
   const team = await ensureTeam(id);
 
   if (!team) {
@@ -748,7 +1239,7 @@ function commit(
   next: NextFunction,
   mutate: (database: Database) => void,
 ): void {
-  const user = localUser;
+  const user = getAuthUser(req);
   const database = getUserDatabase(req);
   const previousRun = userQueues.get(user.sub) ?? Promise.resolve();
 
@@ -773,19 +1264,116 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '28kb' }));
 
-app.get('/api/me', (_req, res) => {
-  res.json({ user: localUser });
+app.get('/api/auth/me', (req, res) => {
+  res.json({ user: getSessionProfile(req) });
+});
+
+app.post(
+  '/api/auth/register',
+  asyncHandler(async (req, res) => {
+    const body = req.body as
+      | { name?: unknown; email?: unknown; password?: unknown }
+      | undefined;
+    const name = parseAccountName(body?.name);
+    const email = normalizeEmail(body?.email);
+    const password = parseNewPassword(body?.password);
+
+    if (!name) {
+      res.status(400).json({
+        error: `Name must be between 1 and ${maxNameLength} characters.`,
+      });
+      return;
+    }
+
+    if (!email) {
+      res.status(400).json({ error: 'Enter a valid email address.' });
+      return;
+    }
+
+    if (!password) {
+      res.status(400).json({
+        error: `Password must be between ${minPasswordLength} and ${maxPasswordLength} characters.`,
+      });
+      return;
+    }
+
+    let account: Account;
+    try {
+      account = await registerAccount(name, email, password);
+    } catch (error) {
+      if (error instanceof HttpError) {
+        res.status(error.status).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
+
+    const profile = profileForAccount(account);
+    await ensureUserDatabase(profile);
+    setCookie(
+      req,
+      res,
+      sessionCookieName,
+      createSessionToken(account),
+      sessionMaxAgeSeconds,
+    );
+    res.status(201).json({ user: profile });
+  }),
+);
+
+app.post(
+  '/api/auth/login',
+  asyncHandler(async (req, res) => {
+    const body = req.body as { email?: unknown; password?: unknown } | undefined;
+    const email = normalizeEmail(body?.email);
+    const password = parseLoginPassword(body?.password);
+
+    if (!email || !password) {
+      res.status(400).json({ error: 'Enter your email and password.' });
+      return;
+    }
+
+    const account = await authenticateAccount(email, password);
+    if (!account) {
+      res.status(401).json({ error: 'Incorrect email or password.' });
+      return;
+    }
+
+    const profile = profileForAccount(account);
+    await ensureUserDatabase(profile);
+    setCookie(
+      req,
+      res,
+      sessionCookieName,
+      createSessionToken(account),
+      sessionMaxAgeSeconds,
+    );
+    res.json({ user: profile });
+  }),
+);
+
+app.post('/api/auth/logout', (req, res) => {
+  clearCookie(req, res, sessionCookieName);
+  res.json({ ok: true });
 });
 
 const api = express.Router();
-api.use((req, _res, next) => {
-  ensureUserDatabase(localUser)
-    .then((database) => {
-      (req as AppRequest).userDatabase = database;
-      next();
-    })
-    .catch(next);
-});
+api.use(
+  asyncHandler(async (req, res, next) => {
+    const user = getSessionProfile(req);
+    if (!user) {
+      clearCookie(req, res, sessionCookieName);
+      res.status(401).json({ error: 'Please sign in to continue.' });
+      return;
+    }
+
+    const database = await ensureUserDatabase(user);
+    const authenticated = req as AppRequest;
+    authenticated.user = user;
+    authenticated.userDatabase = database;
+    next();
+  }),
+);
 
 api.get('/state', (req, res) => {
   res.json(getUserDatabase(req));
@@ -793,8 +1381,8 @@ api.get('/state', (req, res) => {
 
 api.get(
   '/teams',
-  asyncHandler(async (_req, res) => {
-    const user = localUser;
+  asyncHandler(async (req, res) => {
+    const user = getAuthUser(req);
     const teams = (await listTeams())
       .filter((team) => teamRole(team, user) !== null)
       .sort((first, second) => first.createdAt.localeCompare(second.createdAt));
@@ -805,7 +1393,7 @@ api.get(
 );
 
 api.post('/teams', (req, res, next) => {
-  const user = localUser;
+  const user = getAuthUser(req);
   const body = req.body as { name?: unknown } | undefined;
   const name = parseTeamName(body?.name);
 
@@ -851,7 +1439,7 @@ api.get(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    await syncAndPersistMemberProfile(team, localUser);
+    await syncAndPersistMemberProfile(team, getAuthUser(req));
     res.json(team);
   }),
 );
@@ -903,7 +1491,7 @@ api.delete(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = localUser;
+    const user = getAuthUser(req);
     const email = normalizeEmail(req.params.email);
     if (!email) {
       res.status(400).json({ error: 'Enter a valid email address.' });
@@ -971,7 +1559,7 @@ api.post(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = localUser;
+    const user = getAuthUser(req);
     const body = req.body as
       | { text?: unknown; dueAt?: unknown; assigneeEmail?: unknown }
       | undefined;
@@ -1029,7 +1617,7 @@ api.post(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = localUser;
+    const user = getAuthUser(req);
     const task = team.tasks.find((entry) => entry.id === req.params.taskId);
 
     if (!task) {
@@ -1063,7 +1651,7 @@ api.post(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = localUser;
+    const user = getAuthUser(req);
     const task = team.tasks.find((entry) => entry.id === req.params.taskId);
 
     if (!task) {
@@ -1117,7 +1705,7 @@ api.delete(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = localUser;
+    const user = getAuthUser(req);
     const task = team.tasks.find((entry) => entry.id === req.params.taskId);
     if (!task) {
       res.status(404).json({ error: 'Task not found.' });
@@ -1150,7 +1738,7 @@ api.delete(
     const team = await requireTeamMember(req, res);
     if (!team) return;
 
-    const user = localUser;
+    const user = getAuthUser(req);
     const task = team.tasks.find((entry) => entry.id === req.params.taskId);
     if (!task) {
       res.status(404).json({ error: 'Task not found.' });
@@ -1366,10 +1954,14 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 await initializeStorage();
+await loadAccounts();
+sessionSecret = await resolveSessionSecret();
 
 const server = app.listen(port, () => {
   console.log(`API listening on http://localhost:${port}`);
-  console.log(`Running without sign-in as ${localUser.name} <${localUser.email}>.`);
+  console.log(
+    `Email/password accounts enabled (${accounts.size} account${accounts.size === 1 ? '' : 's'}).`,
+  );
   if (hasBuild) {
     console.log(`App available at http://localhost:${port}`);
   }
